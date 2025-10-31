@@ -21,9 +21,6 @@ contract SLARegistry is AccessControl {
 
     constructor(address admin) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(CONTRACT_MS_ROLE, admin);
-        _grantRole(NOVELTIES_MS_ROLE, admin);
-        _grantRole(OPS_ROLE, admin);
     }
 
     // ──────────────────────────── TYPES ──────────────────────────────
@@ -57,19 +54,12 @@ contract SLARegistry is AccessControl {
     }
 
     struct SLA {
-        uint256 id;
-        uint256 contractId;
-        string externalId; // External ID from the backend system
-        string name; // ej. "Entrega <= 24h"
-        string description; // Descripción detallada del SLA
-        int256 target; // umbral (ej. 24 si son horas; o 95 si es %)
-        Comparator comparator; // cómo evaluar
-        bool status; // true = activo, false = pausado
-        uint64 windowSeconds; // ventana de tiempo para evaluación
-        uint64 lastReportAt; // último reporte
-        uint256 consecutiveBreaches; // incumplimientos consecutivos
-        uint256 totalBreaches; // total de incumplimientos
-        uint256 totalPass; // total de cumplimientos
+        string id; // External ID
+        string name;
+        string description;
+        int256 target;
+        Comparator comparator;
+        bool status;
     }
 
     struct SLAInput {
@@ -97,7 +87,7 @@ contract SLARegistry is AccessControl {
     }
 
     // ──────────────────────────── STORAGE ────────────────────────────
-    uint256 private _clientIds;
+    
     uint256 private _contractIds;
     uint256 private _slaIds;
     uint256 private _alertIds;
@@ -182,16 +172,7 @@ contract SLARegistry is AccessControl {
     function createContract(
         ContractInput calldata contractInput
     ) external onlyRole(CONTRACT_MS_ROLE) returns (uint256 contractId) {
-        require(clients[contractInput.customerId].active, "Client not active");
-        require(
-            bytes(contractInput.id).length > 0,
-            "External contract ID required"
-        );
-        require(
-            externalContractIdToInternalId[contractInput.id] == 0,
-            "Contract ID already exists"
-        );
-
+        
         _contractIds++;
         contractId = _contractIds;
 
@@ -214,19 +195,12 @@ contract SLARegistry is AccessControl {
             uint256 slaId = _slaIds;
 
             slas[slaId] = SLA({
-                id: slaId,
-                contractId: contractId,
-                externalId: slaInput.id,
+                id: slaInput.id,
                 name: slaInput.name,
                 description: slaInput.description,
                 target: slaInput.target,
                 comparator: slaInput.comparator,
-                status: slaInput.status,
-                windowSeconds: 0,
-                lastReportAt: 0,
-                consecutiveBreaches: 0,
-                totalBreaches: 0,
-                totalPass: 0
+                status: slaInput.status
             });
 
             contractSLAs[contractId].push(slaId);
