@@ -84,7 +84,7 @@ contract SLARegistry is AccessControl {
     struct ContractInput {
         string id; // External ID from the backend system
         string path; // Path to the contract document (replaces ipfsCid)
-        uint256 customerId; // Client ID (replaces clientId)
+        string customerId; // Client ID (replaces clientId)
         SLAInput[] slas; // Array of SLAs to create with the contract
     }
 
