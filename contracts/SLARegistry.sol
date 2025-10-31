@@ -15,9 +15,7 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 
 contract SLARegistry is AccessControl {
     // ───────────────────────────── ROLES ─────────────────────────────
-    bytes32 public constant CONTRACT_MS_ROLE = keccak256("CONTRACT_MS_ROLE"); // microservicio de Contratos
-    bytes32 public constant NOVELTIES_MS_ROLE = keccak256("NOVELTIES_MS_ROLE"); // microservicio de Novedades
-    bytes32 public constant OPS_ROLE = keccak256("OPS_ROLE"); // Operaciones (ack/resolver alertas)
+
 
     constructor(address admin) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -46,9 +44,7 @@ contract SLARegistry is AccessControl {
     }
 
     struct ClientContract {
-        uint256 id;
-        uint256 clientId;
-        string externalId; // External ID from the backend system
+        string clientId;
         string path; // Path to the contract document
         bool active;
     }
@@ -72,7 +68,6 @@ contract SLARegistry is AccessControl {
     }
 
     struct ContractInput {
-        string id; // External ID from the backend system
         string path; // Path to the contract document (replaces ipfsCid)
         string customerId; // Client ID (replaces clientId)
         SLAInput[] slas; // Array of SLAs to create with the contract
@@ -98,7 +93,7 @@ contract SLARegistry is AccessControl {
     mapping(uint256 => Alert) public alerts;
 
     // Índices básicos
-    mapping(uint256 => uint256[]) public clientContracts; // clientId => contractIds
+    mapping(string => uint256[]) public clientContracts; // clientId (string) => contractIds
     mapping(uint256 => uint256[]) public contractSLAs; // contractId => slaIds
     mapping(uint256 => uint256[]) public slaAlerts; // slaId => alertIds
 
@@ -108,7 +103,7 @@ contract SLARegistry is AccessControl {
     // ───────────────────────────── EVENTS ────────────────────────────
     event ContractCreated(
         uint256 indexed contractId,
-        uint256 indexed clientId,
+        string indexed clientId,
         string externalId,
         string path,
         uint256 slaCount
@@ -171,21 +166,18 @@ contract SLARegistry is AccessControl {
     // ──────────── 1b) CREAR CONTRATO (con estructura completa) ───────
     function createContract(
         ContractInput calldata contractInput
-    ) external onlyRole(CONTRACT_MS_ROLE) returns (uint256 contractId) {
+    ) external returns (uint256 contractId) {
         
         _contractIds++;
         contractId = _contractIds;
 
         contractsById[contractId] = ClientContract({
-            id: contractId,
             clientId: contractInput.customerId,
-            externalId: contractInput.id,
             path: contractInput.path,
             active: true
         });
 
         clientContracts[contractInput.customerId].push(contractId);
-        externalContractIdToInternalId[contractInput.id] = contractId;
 
         // Create SLAs associated with this contract
         for (uint256 i = 0; i < contractInput.slas.length; i++) {
@@ -218,7 +210,7 @@ contract SLARegistry is AccessControl {
         emit ContractCreated(
             contractId,
             contractInput.customerId,
-            contractInput.id,
+            "", // externalId - you may want to add this to ContractInput if needed
             contractInput.path,
             contractInput.slas.length
         );
@@ -235,21 +227,17 @@ contract SLARegistry is AccessControl {
         string calldata note
     )
         external
-        onlyRole(CONTRACT_MS_ROLE) // o el servicio que recolecte KPIs
+       
     {
         SLA storage s = slas[slaId];
         require(s.status, "SLA not active");
 
         bool ok = _compare(observed, s.target, s.comparator);
-        s.lastReportAt = uint64(block.timestamp);
+       
 
         if (ok) {
-            s.consecutiveBreaches = 0;
-            s.totalPass += 1;
             emit SLAMetricReported(slaId, uint256(observed), true, note);
         } else {
-            s.consecutiveBreaches += 1;
-            s.totalBreaches += 1;
             emit SLAMetricReported(slaId, uint256(observed), false, note);
 
             // Crear alerta
@@ -270,7 +258,7 @@ contract SLARegistry is AccessControl {
     }
 
     // ───────────── ACK/RESOLVER ALERTAS (Operaciones) ────────────────
-    function acknowledgeAlert(uint256 alertId) external onlyRole(OPS_ROLE) {
+    function acknowledgeAlert(uint256 alertId) external  {
         Alert storage a = alerts[alertId];
         require(a.status == AlertStatus.Open, "Alert not open");
         a.status = AlertStatus.Acknowledged;
@@ -280,7 +268,7 @@ contract SLARegistry is AccessControl {
     function resolveAlert(
         uint256 alertId,
         string calldata resolutionNote
-    ) external onlyRole(OPS_ROLE) {
+    ) external  {
         Alert storage a = alerts[alertId];
         require(
             a.status == AlertStatus.Acknowledged ||
@@ -293,7 +281,7 @@ contract SLARegistry is AccessControl {
 
     // ────────────────────────── VIEWS ÚTILES ─────────────────────────
     function getClientContracts(
-        uint256 clientId
+        string calldata clientId
     ) external view returns (uint256[] memory) {
         return clientContracts[clientId];
     }
