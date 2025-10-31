@@ -28,17 +28,13 @@ contract SLARegistry is AccessControl {
 
     // ──────────────────────────── TYPES ──────────────────────────────
     enum Comparator {
-        LT,
-        LE,
-        EQ,
-        GE,
-        GT
+        GT, // ">"  Greater
+        LT, // "<"  Less
+        EQ, // "==" Equal
+        NE, // "!=" NotEqual
+        GE, // ">=" GreaterOrEqual
+        LE // "<=" LessOrEqual
     } // cómo comparar observed vs target
-    enum SLAStatus {
-        Active,
-        Paused,
-        Archived
-    }
     enum AlertStatus {
         Open,
         Acknowledged,
@@ -55,24 +51,41 @@ contract SLARegistry is AccessControl {
     struct ClientContract {
         uint256 id;
         uint256 clientId;
-        string ipfsCid; // CID del documento legal en IPFS (contrato real)
-        uint64 startDate; // epoch
-        uint64 endDate; // epoch (0 si indeterminado)
+        string externalId; // External ID from the backend system
+        string path; // Path to the contract document
         bool active;
     }
 
     struct SLA {
         uint256 id;
         uint256 contractId;
+        string externalId; // External ID from the backend system
         string name; // ej. "Entrega <= 24h"
-        uint256 target; // umbral (ej. 24 si son horas; o 95 si es %)
+        string description; // Descripción detallada del SLA
+        int256 target; // umbral (ej. 24 si son horas; o 95 si es %)
         Comparator comparator; // cómo evaluar
-        SLAStatus status; // activo/pausa/archivo
-        uint64 windowSeconds; // ventana de observación (si aplica)
-        uint64 lastReportAt; // timestamp último reporte
-        uint32 consecutiveBreaches; // contadores simples
-        uint32 totalBreaches;
-        uint32 totalPass;
+        bool status; // true = activo, false = pausado
+        uint64 windowSeconds; // ventana de tiempo para evaluación
+        uint64 lastReportAt; // último reporte
+        uint256 consecutiveBreaches; // incumplimientos consecutivos
+        uint256 totalBreaches; // total de incumplimientos
+        uint256 totalPass; // total de cumplimientos
+    }
+
+    struct SLAInput {
+        string id; // External ID
+        string name;
+        string description;
+        int256 target;
+        Comparator comparator;
+        bool status;
+    }
+
+    struct ContractInput {
+        string id; // External ID from the backend system
+        string path; // Path to the contract document (replaces ipfsCid)
+        uint256 customerId; // Client ID (replaces clientId)
+        SLAInput[] slas; // Array of SLAs to create with the contract
     }
 
     struct Alert {
@@ -99,15 +112,17 @@ contract SLARegistry is AccessControl {
     mapping(uint256 => uint256[]) public contractSLAs; // contractId => slaIds
     mapping(uint256 => uint256[]) public slaAlerts; // slaId => alertIds
 
+    // Mapping for external contract IDs
+    mapping(string => uint256) public externalContractIdToInternalId; // externalId => contractId
+
     // ───────────────────────────── EVENTS ────────────────────────────
     event ContractCreated(
         uint256 indexed contractId,
         uint256 indexed clientId,
-        string ipfsCid,
-        uint64 startDate,
-        uint64 endDate
+        string externalId,
+        string path,
+        uint256 slaCount
     );
-    event ContractUpdated(uint256 indexed contractId, string newIpfsCid);
 
     event SLACreated(
         uint256 indexed slaId,
@@ -125,8 +140,12 @@ contract SLARegistry is AccessControl {
         string note
     );
 
-    event SLAViolated(// <— ALERTA para que tu backend notifique
-    uint256 indexed alertId, uint256 indexed slaId, string reason);
+    event SLAViolated(
+        // <— ALERTA para que tu backend notifique
+        uint256 indexed alertId,
+        uint256 indexed slaId,
+        string reason
+    );
 
     event AlertAcknowledged(uint256 indexed alertId, address by);
     event AlertResolved(
@@ -135,117 +154,101 @@ contract SLARegistry is AccessControl {
         string resolutionNote
     );
 
-    event NoveltyApplied(// <— cuando Novedades modifica un SLA
-    uint256 indexed slaId, string field, string detail);
+    event NoveltyApplied(
+        // <— cuando Novedades modifica un SLA
+        uint256 indexed slaId,
+        string field,
+        string detail
+    );
 
-    event SLAStatusChanged(uint256 indexed slaId, SLAStatus newStatus);
+    event SLAStatusChanged(uint256 indexed slaId, bool isActive);
 
     // ─────────────────────────── UTILIDADES ──────────────────────────
     function _compare(
-        uint256 observed,
-        uint256 target,
+        int256 observed,
+        int256 target,
         Comparator cmp
     ) internal pure returns (bool) {
-        if (cmp == Comparator.LT) return observed < target;
-        if (cmp == Comparator.LE) return observed <= target;
-        if (cmp == Comparator.EQ) return observed == target;
-        if (cmp == Comparator.GE) return observed >= target;
         if (cmp == Comparator.GT) return observed > target;
+        if (cmp == Comparator.LT) return observed < target;
+        if (cmp == Comparator.EQ) return observed == target;
+        if (cmp == Comparator.NE) return observed != target;
+        if (cmp == Comparator.GE) return observed >= target;
+        if (cmp == Comparator.LE) return observed <= target;
         return false;
     }
 
-    // ────────────────────── 1) REGISTRO DE CLIENTE ───────────────────
-    function registerClient(
-        string calldata name,
-        address account
-    ) external onlyRole(CONTRACT_MS_ROLE) returns (uint256 clientId) {
-        _clientIds++;
-        clientId = _clientIds;
-
-        clients[clientId] = Client({
-            id: clientId,
-            name: name,
-            account: account,
-            active: true
-        });
-
-    }
-
-    // ──────────── 1b) CREAR CONTRATO (con hash/CID IPFS legal) ───────
+    // ──────────── 1b) CREAR CONTRATO (con estructura completa) ───────
     function createContract(
-        uint256 clientId,
-        string calldata ipfsCid,
-        uint64 startDate,
-        uint64 endDate
+        ContractInput calldata contractInput
     ) external onlyRole(CONTRACT_MS_ROLE) returns (uint256 contractId) {
-        require(clients[clientId].active, "Client not active");
+        require(clients[contractInput.customerId].active, "Client not active");
+        require(
+            bytes(contractInput.id).length > 0,
+            "External contract ID required"
+        );
+        require(
+            externalContractIdToInternalId[contractInput.id] == 0,
+            "Contract ID already exists"
+        );
 
         _contractIds++;
         contractId = _contractIds;
 
         contractsById[contractId] = ClientContract({
             id: contractId,
-            clientId: clientId,
-            ipfsCid: ipfsCid,
-            startDate: startDate,
-            endDate: endDate,
+            clientId: contractInput.customerId,
+            externalId: contractInput.id,
+            path: contractInput.path,
             active: true
         });
 
-        clientContracts[clientId].push(contractId);
+        clientContracts[contractInput.customerId].push(contractId);
+        externalContractIdToInternalId[contractInput.id] = contractId;
 
-        emit ContractCreated(contractId, clientId, ipfsCid, startDate, endDate);
-    }
+        // Create SLAs associated with this contract
+        for (uint256 i = 0; i < contractInput.slas.length; i++) {
+            SLAInput calldata slaInput = contractInput.slas[i];
 
-    // Opcional: actualizar/rotar el documento legal (nuevo CID/IPFS)
-    function updateContractIPFS(
-        uint256 contractId,
-        string calldata newCid
-    ) external onlyRole(CONTRACT_MS_ROLE) {
-        require(contractsById[contractId].active, "Contract not active");
-        contractsById[contractId].ipfsCid = newCid;
-        emit ContractUpdated(contractId, newCid);
-    }
+            _slaIds++;
+            uint256 slaId = _slaIds;
 
-    // ──────────── 2) DEFINIR SLA (objetivo, comparador, ventana) ─────
-    function addSLA(
-        uint256 contractId,
-        string calldata name,
-        uint256 target,
-        Comparator comparator,
-        uint64 windowSeconds
-    ) external onlyRole(CONTRACT_MS_ROLE) returns (uint256 slaId) {
-        require(contractsById[contractId].active, "Contract not active");
+            slas[slaId] = SLA({
+                id: slaId,
+                contractId: contractId,
+                externalId: slaInput.id,
+                name: slaInput.name,
+                description: slaInput.description,
+                target: slaInput.target,
+                comparator: slaInput.comparator,
+                status: slaInput.status,
+                windowSeconds: 0,
+                lastReportAt: 0,
+                consecutiveBreaches: 0,
+                totalBreaches: 0,
+                totalPass: 0
+            });
 
-        _slaIds++;
-        slaId = _slaIds;
+            contractSLAs[contractId].push(slaId);
 
-        slas[slaId] = SLA({
-            id: slaId,
-            contractId: contractId,
-            name: name,
-            target: target,
-            comparator: comparator,
-            status: SLAStatus.Active,
-            windowSeconds: windowSeconds,
-            lastReportAt: 0,
-            consecutiveBreaches: 0,
-            totalBreaches: 0,
-            totalPass: 0
-        });
+            emit SLACreated(
+                slaId,
+                contractId,
+                slaInput.name,
+                uint256(slaInput.target),
+                slaInput.comparator,
+                0
+            );
+        }
 
-        contractSLAs[contractId].push(slaId);
-
-        emit SLACreated(
-            slaId,
+        emit ContractCreated(
             contractId,
-            name,
-            target,
-            comparator,
-            windowSeconds
+            contractInput.customerId,
+            contractInput.id,
+            contractInput.path,
+            contractInput.slas.length
         );
     }
-
     // ───────────── 3) REPORTE DE MÉTRICA (genera alerta si falla) ────
     /**
      * @param slaId     SLA a evaluar
@@ -254,14 +257,14 @@ contract SLARegistry is AccessControl {
      */
     function reportMetric(
         uint256 slaId,
-        uint256 observed,
+        int256 observed,
         string calldata note
     )
         external
         onlyRole(CONTRACT_MS_ROLE) // o el servicio que recolecte KPIs
     {
         SLA storage s = slas[slaId];
-        require(s.status == SLAStatus.Active, "SLA not active");
+        require(s.status, "SLA not active");
 
         bool ok = _compare(observed, s.target, s.comparator);
         s.lastReportAt = uint64(block.timestamp);
@@ -269,11 +272,11 @@ contract SLARegistry is AccessControl {
         if (ok) {
             s.consecutiveBreaches = 0;
             s.totalPass += 1;
-            emit SLAMetricReported(slaId, observed, true, note);
+            emit SLAMetricReported(slaId, uint256(observed), true, note);
         } else {
             s.consecutiveBreaches += 1;
             s.totalBreaches += 1;
-            emit SLAMetricReported(slaId, observed, false, note);
+            emit SLAMetricReported(slaId, uint256(observed), false, note);
 
             // Crear alerta
             _alertIds++;
@@ -290,53 +293,6 @@ contract SLARegistry is AccessControl {
             slaAlerts[slaId].push(alertId);
             emit SLAViolated(alertId, slaId, note); // <— escuchado por tu backend para notificar
         }
-    }
-
-    // ───────────── 4) NOVEDADES: modificar/pausar un SLA ─────────────
-    function pauseSLA(
-        uint256 slaId,
-        string calldata reason
-    ) external onlyRole(NOVELTIES_MS_ROLE) {
-        SLA storage s = slas[slaId];
-        require(s.status == SLAStatus.Active, "SLA not active");
-        s.status = SLAStatus.Paused;
-        emit SLAStatusChanged(slaId, s.status);
-        emit NoveltyApplied(slaId, "status", reason);
-    }
-
-    function resumeSLA(
-        uint256 slaId,
-        string calldata reason
-    ) external onlyRole(NOVELTIES_MS_ROLE) {
-        SLA storage s = slas[slaId];
-        require(s.status == SLAStatus.Paused, "SLA not paused");
-        s.status = SLAStatus.Active;
-        emit SLAStatusChanged(slaId, s.status);
-        emit NoveltyApplied(slaId, "status", reason);
-    }
-
-    // Cambiar el objetivo/umbral ante una novedad (p. ej., bloqueo de vías → objetivo pasa de 24h a 36h)
-    function updateSLATarget(
-        uint256 slaId,
-        uint256 newTarget,
-        string calldata reason
-    ) external onlyRole(NOVELTIES_MS_ROLE) {
-        SLA storage s = slas[slaId];
-        s.target = newTarget;
-        emit NoveltyApplied(slaId, "target", reason);
-    }
-
-    // Cambiar el comparador (ej. de <= a <) o ventana
-    function updateSLAParams(
-        uint256 slaId,
-        Comparator newComparator,
-        uint64 newWindowSeconds,
-        string calldata reason
-    ) external onlyRole(NOVELTIES_MS_ROLE) {
-        SLA storage s = slas[slaId];
-        s.comparator = newComparator;
-        s.windowSeconds = newWindowSeconds;
-        emit NoveltyApplied(slaId, "comparator|window", reason);
     }
 
     // ───────────── ACK/RESOLVER ALERTAS (Operaciones) ────────────────
@@ -380,4 +336,3 @@ contract SLARegistry is AccessControl {
         return slaAlerts[slaId];
     }
 }
-
