@@ -1,10 +1,10 @@
 import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
 
 const SLARegistryModule = buildModule("SLARegistryModule", (m) => {
-  // Get the deployer account as the admin
-  const admin = m.getAccount(0);
+  // Get the admin address from parameters, or use the default account
+  const admin = m.getParameter("admin", m.getAccount(0));
 
-  // Deploy SLARegistry contract with admin address
+  // Deploy the SLARegistry contract
   const slaRegistry = m.contract("SLARegistry", [admin]);
 
   return { slaRegistry };
