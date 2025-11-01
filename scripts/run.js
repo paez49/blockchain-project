@@ -958,30 +958,81 @@ async function createContractExample() {
 async function reportMetricExample() {
   // Get SLA IDs for the contract using the correct contract ID
   const slaIds = await slaRegistry.getContractSLAs("1"); // Use "1" which matches the created contract
-  console.log("SLA IDs:", slaIds);
+  console.log("📋 Available SLA IDs:", slaIds.map(id => id.toString()));
   
   if (slaIds.length === 0) {
     console.log("❌ No SLAs found for this contract!");
     return;
   }
   
-  const deliverySlaId = slaIds[0];  // First SLA (Delivery Time)
-  console.log("Using SLA ID:", deliverySlaId.toString());
+  const deliverySlaId = slaIds[0];  // First SLA (Delivery Time - target < 24h)
+  console.log("\n🎯 Testing SLA ID:", deliverySlaId.toString());
+  
+  // Get SLA details before reporting
+  const slaData = await slaRegistry.slas(deliverySlaId);
+  console.log("📝 SLA Details:");
+  console.log("   Name:", slaData.name);
+  console.log("   Target:", slaData.target.toString());
+  console.log("   Comparator:", slaData.comparator, "(1 = LT '<')");
+  console.log("   Status:", slaData.status ? "Active" : "Inactive");
 
-  // Report a metric that VIOLATES the SLA (36h > 24h)
+  // Report a metric that VIOLATES the SLA (36h > 24h target with LT comparator)
+  console.log("\n📊 Reporting metric: 36 hours (should violate 24h target)");
   const tx = await slaRegistry.reportMetric(
     deliverySlaId,
     36,                               // Observed value (36 hours)
     "Order #1234 - Delivery took 36h"
   );
+  
+  console.log("⏳ Waiting for transaction confirmation...");
   const receipt = await tx.wait();
+  console.log("✅ Transaction confirmed!");
+  console.log("📦 Tx Hash:", receipt.hash);
 
-  // Log the SLAViolated event
+  // Parse all events to see what happened
+  console.log("\n📢 Events emitted:");
+  for (const log of receipt.logs) {
+    try {
+      const parsed = slaRegistry.interface.parseLog(log);
+      if (parsed) {
+        console.log(`   - ${parsed.name}`);
+        if (parsed.name === "SLAMetricReported") {
+          console.log(`     SLA ID: ${parsed.args.slaId.toString()}`);
+          console.log(`     Observed: ${parsed.args.observed.toString()}`);
+          console.log(`     Success: ${parsed.args.success}`);
+          console.log(`     Note: ${parsed.args.note}`);
+        } else if (parsed.name === "SLAViolated") {
+          console.log(`     Alert ID: ${parsed.args.alertId.toString()}`);
+          console.log(`     SLA ID: ${parsed.args.slaId.toString()}`);
+          console.log(`     Reason: ${parsed.args.reason}`);
+        }
+      }
+    } catch (e) {
+      // Skip logs that aren't from our contract
+    }
+  }
+
+  // Find the SLAViolated event
   const slaViolatedEvent = receipt.logs.find(
-    (log) => log.fragment.name === "SLAViolated"
+    (log) => {
+      try {
+        const parsed = slaRegistry.interface.parseLog(log);
+        return parsed && parsed.name === "SLAViolated";
+      } catch (e) {
+        return false;
+      }
+    }
   );
-  const alertId = slaViolatedEvent.args.alertId;
-  console.log(`🚨 Alert triggered! ID: ${alertId}`);
+  
+  if (slaViolatedEvent) {
+    const parsed = slaRegistry.interface.parseLog(slaViolatedEvent);
+    const alertId = parsed.args.alertId;
+    console.log(`\n🚨 Alert triggered! Alert ID: ${alertId.toString()}`);
+    return alertId;
+  } else {
+    console.log("\n✅ No alert triggered - metric passed SLA requirements");
+    return null;
+  }
 }
 
 // 5. Acknowledge and resolve the alert
@@ -1041,19 +1092,21 @@ async function queryExample() {
     // Get all alerts for an SLA (if any SLAs exist)
     if (slaIds.length > 0) {
       console.log("\n4️⃣ Querying SLA details...");
-      const alerts = await slaRegistry.getSLAAlerts(slaIds[0]);
-      console.log("🚨 Alerts for SLA", slaIds[0].toString() + ":", alerts);
       
-      // Query the actual SLA data
-      const slaData = await slaRegistry.slas(slaIds[1]);
-      console.log("📝 SLA Details:", {
-        id: slaData.id,
-        name: slaData.name,
-        description: slaData.description,
-        target: slaData.target.toString(),
-        comparator: slaData.comparator,
-        status: slaData.status
-      });
+      // Query all SLAs
+      for (let i = 0; i < slaIds.length; i++) {
+        const slaId = slaIds[i];
+        const slaData = await slaRegistry.slas(slaId);
+        const alerts = await slaRegistry.getSLAAlerts(slaId);
+        
+        console.log(`\n   SLA #${i + 1} (ID: ${slaId.toString()}):`);
+        console.log("   ├─ Name:", slaData.name);
+        console.log("   ├─ Description:", slaData.description);
+        console.log("   ├─ Target:", slaData.target.toString());
+        console.log("   ├─ Comparator:", slaData.comparator);
+        console.log("   ├─ Status:", slaData.status ? "Active" : "Inactive");
+        console.log("   └─ Alerts:", alerts.length);
+      }
     } else {
       console.log("⚠️  No SLAs found for this contract.");
     }
@@ -1087,15 +1140,24 @@ async function queryExample() {
     console.log("\n📊 Querying stored data...");
     await queryExample();
     
-    // Uncomment these to test metric reporting and alert management:
-    // console.log("\n📈 Reporting metric...");
-    // await reportMetricExample();
-    // const alerts = await slaRegistry.getSLAAlerts(1); // Assume SLA ID = 1
-    // if (alerts.length > 0) {
-    //   await manageAlertExample(alerts[0]); // Resolve the first alert
-    // }
+    // Test metric reporting and alert management
+    console.log("\n📈 Testing reportMetric function...");
+    await reportMetricExample();
+    
+    // Query alerts that were created
+    const slaIds = await slaRegistry.getContractSLAs("1");
+    if (slaIds.length > 0) {
+      const alerts = await slaRegistry.getSLAAlerts(slaIds[0]);
+      console.log("\n🔔 Total alerts created:", alerts.length);
+      
+      if (alerts.length > 0) {
+        console.log("\n🔧 Managing alert...");
+        await manageAlertExample(alerts[0]);
+      }
+    }
   } catch (error) {
     console.error("\n❌ Fatal error:", error.message);
+    console.error("Stack:", error.stack);
     process.exit(1);
   }
 })();
