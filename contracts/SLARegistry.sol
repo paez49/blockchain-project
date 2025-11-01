@@ -44,6 +44,7 @@ contract SLARegistry is AccessControl {
     }
 
     struct ClientContract {
+        string id;
         string clientId;
         string path; // Path to the contract document
         bool active;
@@ -68,6 +69,7 @@ contract SLARegistry is AccessControl {
     }
 
     struct ContractInput {
+        string id; 
         string path; // Path to the contract document (replaces ipfsCid)
         string customerId; // Client ID (replaces clientId)
         SLAInput[] slas; // Array of SLAs to create with the contract
@@ -88,13 +90,13 @@ contract SLARegistry is AccessControl {
     uint256 private _alertIds;
 
     mapping(uint256 => Client) public clients;
-    mapping(uint256 => ClientContract) public contractsById;
+    mapping(string => ClientContract) public contractsById;
     mapping(uint256 => SLA) public slas;
     mapping(uint256 => Alert) public alerts;
 
     // Índices básicos
-    mapping(string => uint256[]) public clientContracts; // clientId (string) => contractIds
-    mapping(uint256 => uint256[]) public contractSLAs; // contractId => slaIds
+    mapping(string => string[]) public clientContracts; // clientId (string) => contract string IDs
+    mapping(string => uint256[]) public contractSLAs; // contract string ID => slaIds
     mapping(uint256 => uint256[]) public slaAlerts; // slaId => alertIds
 
     // Mapping for external contract IDs
@@ -163,21 +165,25 @@ contract SLARegistry is AccessControl {
         return false;
     }
 
-    // ──────────── 1b) CREAR CONTRATO (con estructura completa) ───────
     function createContract(
         ContractInput calldata contractInput
     ) external returns (uint256 contractId) {
         
         _contractIds++;
         contractId = _contractIds;
-
-        contractsById[contractId] = ClientContract({
+ 
+        contractsById[contractInput.id] = ClientContract({
+            id: contractInput.id,
             clientId: contractInput.customerId,
             path: contractInput.path,
             active: true
         });
 
-        clientContracts[contractInput.customerId].push(contractId);
+        // Map external string ID to internal numeric ID
+        externalContractIdToInternalId[contractInput.id] = contractId;
+
+        // Store string contract ID in client contracts array
+        clientContracts[contractInput.customerId].push(contractInput.id);
 
         // Create SLAs associated with this contract
         for (uint256 i = 0; i < contractInput.slas.length; i++) {
@@ -195,7 +201,7 @@ contract SLARegistry is AccessControl {
                 status: slaInput.status
             });
 
-            contractSLAs[contractId].push(slaId);
+            contractSLAs[contractInput.id].push(slaId);
 
             emit SLACreated(
                 slaId,
@@ -282,12 +288,12 @@ contract SLARegistry is AccessControl {
     // ────────────────────────── VIEWS ÚTILES ─────────────────────────
     function getClientContracts(
         string calldata clientId
-    ) external view returns (uint256[] memory) {
+    ) external view returns (string[] memory) {
         return clientContracts[clientId];
     }
 
     function getContractSLAs(
-        uint256 contractId
+        string calldata contractId
     ) external view returns (uint256[] memory) {
         return contractSLAs[contractId];
     }
