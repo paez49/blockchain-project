@@ -32,6 +32,10 @@ contract SLAEnforcer {
     mapping(string => uint) private contractIndexById;
     mapping(string => bool) private contractExists;
 
+    // Mapping to track SLA index by contract ID and SLA ID: contractId => (slaId => slaIndex)
+    mapping(string => mapping(string => uint)) private slaIndexById;
+    mapping(string => mapping(string => bool)) private slaExists;
+
     // Events for transparency
     event ContractAdded(string indexed contractId, string customerId);
     event SLAAdded(string indexed contractId, string slaId);
@@ -119,6 +123,7 @@ contract SLAEnforcer {
     ) external {
         require(contractExists[_contractId], "Contract does not exist");
         require(bytes(_slaId).length > 0, "SLA ID cannot be empty");
+        require(!slaExists[_contractId][_slaId], "SLA ID already exists for this contract");
 
         uint index = contractIndexById[_contractId];
 
@@ -130,6 +135,11 @@ contract SLAEnforcer {
             comparator: _comparator,
             status: SLAStatus.ACTIVE
         }));
+
+        // Store the index of the newly added SLA
+        uint slaIndex = contracts[index].slas.length - 1;
+        slaIndexById[_contractId][_slaId] = slaIndex;
+        slaExists[_contractId][_slaId] = true;
 
         emit SLAAdded(_contractId, _slaId);
     }
@@ -160,16 +170,36 @@ contract SLAEnforcer {
         return (sla.id, sla.name, sla.description, sla.target, sla.comparator, sla.status);
     }
 
+    // Get a specific SLA by contract id and sla id
+    function getSLAById(string calldata _contractId, string calldata _slaId) external view returns (
+        string memory id,
+        string memory name,
+        string memory description,
+        uint target,
+        Comparator comparator,
+        SLAStatus status
+    ) {
+        require(contractExists[_contractId], "Contract does not exist");
+        require(slaExists[_contractId][_slaId], "SLA does not exist");
+
+        uint contractIndex = contractIndexById[_contractId];
+        uint slaIndex = slaIndexById[_contractId][_slaId];
+
+        SLA storage sla = contracts[contractIndex].slas[slaIndex];
+        return (sla.id, sla.name, sla.description, sla.target, sla.comparator, sla.status);
+    }
+
     // ============= SLA Enforcement =============
 
     // Check if a value meets SLA requirements
-    function checkSLA(string calldata _contractId, uint _slaIndex, uint _actualValue) external {
+    function checkSLA(string calldata _contractId, string calldata _slaId, uint _actualValue) external {
         require(contractExists[_contractId], "Contract does not exist");
+        require(slaExists[_contractId][_slaId], "SLA does not exist");
 
         uint contractIndex = contractIndexById[_contractId];
-        require(_slaIndex < contracts[contractIndex].slas.length, "SLA index out of bounds");
+        uint slaIndex = slaIndexById[_contractId][_slaId];
 
-        SLA storage sla = contracts[contractIndex].slas[_slaIndex];
+        SLA storage sla = contracts[contractIndex].slas[slaIndex];
         require(sla.status == SLAStatus.ACTIVE, "SLA is not active");
 
         bool isCompliant = compareValues(_actualValue, sla.target, sla.comparator);
@@ -196,7 +226,7 @@ contract SLAEnforcer {
         return false;
     }
 
-    // Set SLA status manually (for administrative purposes)
+    // Set SLA status manually (for administrative purposes) - by index
     function setSLAStatus(string calldata _contractId, uint _slaIndex, SLAStatus _status) external {
         require(contractExists[_contractId], "Contract does not exist");
 
@@ -204,6 +234,20 @@ contract SLAEnforcer {
         require(_slaIndex < contracts[contractIndex].slas.length, "SLA index out of bounds");
 
         SLA storage sla = contracts[contractIndex].slas[_slaIndex];
+        sla.status = _status;
+
+        emit SLAStatusUpdated(_contractId, sla.id, _status);
+    }
+
+    // Set SLA status manually (for administrative purposes) - by ID
+    function setSLAStatusById(string calldata _contractId, string calldata _slaId, SLAStatus _status) external {
+        require(contractExists[_contractId], "Contract does not exist");
+        require(slaExists[_contractId][_slaId], "SLA does not exist");
+
+        uint contractIndex = contractIndexById[_contractId];
+        uint slaIndex = slaIndexById[_contractId][_slaId];
+
+        SLA storage sla = contracts[contractIndex].slas[slaIndex];
         sla.status = _status;
 
         emit SLAStatusUpdated(_contractId, sla.id, _status);
